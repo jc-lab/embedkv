@@ -1,0 +1,43 @@
+[workspace]
+
+[package]
+name = "embedkv-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+
+[dependencies.embedkv]
+path = ".."
+
+# Silence unused-crate-dependencies lint for proc-macro re-exports
+[[bin]]
+name = "fuzz_raw_block"
+path = "fuzz_targets/fuzz_raw_block.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_crc_valid_descriptor"
+path = "fuzz_targets/fuzz_crc_valid_descriptor.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_crc_valid_chunk"
+path = "fuzz_targets/fuzz_crc_valid_chunk.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_storage_pipeline"
+path = "fuzz_targets/fuzz_storage_pipeline.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_put_get_delete"
+path = "fuzz_targets/fuzz_put_get_delete.rs"
+doc = false

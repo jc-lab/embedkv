@@ -1,0 +1,12 @@
+[package]
+name = "embedkv"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "embedkv"
+path = "src/lib.rs"
+
+[[test]]
+name = "compat"
+path = "tests/compat.rs"

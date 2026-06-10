@@ -1,0 +1,119 @@
+name: Fuzz
+
+# Fuzz tests are slow (several minutes) and require nightly Rust.
+# Run only on push to main; skip PRs to keep feedback fast.
+on:
+  push:
+    branches: [main]
+  # Allow manual trigger for on-demand fuzz runs
+  workflow_dispatch:
+    inputs:
+      fuzztime:
+        description: 'Seconds per fuzz target'
+        default: '30'
+        required: false
+
+env:
+  FUZZ_TIME: ${{ inputs.fuzztime || '30' }}
+
+jobs:
+  # ── Go fuzz ───────────────────────────────────────────────────────────────
+  go-fuzz:
+    name: Go fuzz
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: FuzzRawBlock
+        run: go test ./go/... -fuzz=FuzzRawBlock -fuzztime=${FUZZ_TIME}s
+
+      - name: FuzzCRCValidDescriptor
+        run: go test ./go/... -fuzz=FuzzCRCValidDescriptor -fuzztime=${FUZZ_TIME}s
+
+      - name: FuzzCRCValidChunk
+        run: go test ./go/... -fuzz=FuzzCRCValidChunk -fuzztime=${FUZZ_TIME}s
+
+      - name: FuzzStoragePipeline
+        run: go test ./go/... -fuzz=FuzzStoragePipeline -fuzztime=${FUZZ_TIME}s
+
+      - name: FuzzPutGetDelete
+        run: go test ./go/... -fuzz=FuzzPutGetDelete -fuzztime=${FUZZ_TIME}s
+
+      # Upload any crash inputs found during fuzzing
+      - name: Upload Go fuzz corpus
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-fuzz-corpus
+          path: |
+            go/testdata/fuzz/
+          if-no-files-found: ignore
+
+  # ── Rust fuzz ─────────────────────────────────────────────────────────────
+  rust-fuzz:
+    name: Rust fuzz
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            rust/target
+          key: cargo-nightly-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-nightly-${{ runner.os }}-
+
+      - name: Cache cargo-fuzz binary
+        id: cache-cargo-fuzz
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/bin/cargo-fuzz
+          key: cargo-fuzz-${{ runner.os }}-${{ hashFiles('~/.cargo/registry/index/**') }}
+          restore-keys: cargo-fuzz-${{ runner.os }}-
+
+      - name: Install cargo-fuzz
+        if: steps.cache-cargo-fuzz.outputs.cache-hit != 'true'
+        run: cargo install cargo-fuzz --locked
+
+      - name: fuzz_raw_block
+        run: cargo +nightly fuzz run fuzz_raw_block -- -max_total_time=${FUZZ_TIME}
+        working-directory: rust
+
+      - name: fuzz_crc_valid_descriptor
+        run: cargo +nightly fuzz run fuzz_crc_valid_descriptor -- -max_total_time=${FUZZ_TIME}
+        working-directory: rust
+
+      - name: fuzz_crc_valid_chunk
+        run: cargo +nightly fuzz run fuzz_crc_valid_chunk -- -max_total_time=${FUZZ_TIME}
+        working-directory: rust
+
+      - name: fuzz_storage_pipeline
+        run: cargo +nightly fuzz run fuzz_storage_pipeline -- -max_total_time=${FUZZ_TIME}
+        working-directory: rust
+
+      - name: fuzz_put_get_delete
+        run: cargo +nightly fuzz run fuzz_put_get_delete -- -max_total_time=${FUZZ_TIME}
+        working-directory: rust
+
+      # Upload crash inputs so they can be inspected and added to the corpus
+      - name: Upload Rust fuzz artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-fuzz-artifacts
+          path: |
+            rust/fuzz/artifacts/
+            rust/fuzz/corpus/
+          if-no-files-found: ignore

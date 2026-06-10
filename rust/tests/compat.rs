@@ -3,7 +3,10 @@ use std::path::PathBuf;
 
 fn testdata_path(name: &str) -> PathBuf {
     let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    PathBuf::from(manifest).join("..").join("testdata").join(name)
+    PathBuf::from(manifest)
+        .join("..")
+        .join("testdata")
+        .join(name)
 }
 
 fn load_fixture(name: &str) -> MemDevice {

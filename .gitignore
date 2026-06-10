@@ -14,3 +14,4 @@ target
 go/vendor/
 
 rust/fuzz/artifacts
+rust/fuzz/corpus

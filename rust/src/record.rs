@@ -1,8 +1,6 @@
 use std::collections::HashSet;
 
-use crate::block::{
-    unmarshal_chunk_header, unmarshal_descriptor_header, ValueChunkHeader,
-};
+use crate::block::{unmarshal_chunk_header, unmarshal_descriptor_header, ValueChunkHeader};
 
 use crate::device::BlockDevice;
 use crate::error::Result;
@@ -153,6 +151,6 @@ pub fn needed_blocks(key: &[u8], value: &[u8], block_size: u32) -> u32 {
         return 1;
     }
     let remaining = vlen - first_cap;
-    let extra = (remaining + chunk_cap - 1) / chunk_cap;
+    let extra = remaining.div_ceil(chunk_cap);
     1 + extra
 }

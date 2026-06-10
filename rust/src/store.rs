@@ -1,9 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::block::{
-    make_free_buf, marshal_chunk_header, marshal_descriptor_header, marshal_storage_header,
-    unmarshal_chunk_header, unmarshal_descriptor_header, unmarshal_storage_header,
-    RecordDescriptorHeader, StorageHeader, ValueChunkHeader, is_free_candidate,
+    is_free_candidate, make_free_buf, marshal_chunk_header, marshal_descriptor_header,
+    marshal_storage_header, unmarshal_chunk_header, unmarshal_descriptor_header,
+    unmarshal_storage_header, RecordDescriptorHeader, StorageHeader, ValueChunkHeader,
 };
 use crate::crc::compute_block_crc32;
 use crate::device::BlockDevice;
@@ -13,7 +13,7 @@ use crate::index::{IndexEntry, MemIndex};
 use crate::record::{needed_blocks, verify_and_read_record};
 
 /// Options configuring storage behavior.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Options {
     /// Fill byte when erasing blocks.
     /// Use 0x00 for zero-filled / HDD storage, 0xFF for erased NAND flash.
@@ -22,16 +22,6 @@ pub struct Options {
     pub replica_id: u32,
     /// Storage format generation counter.
     pub format_seq: u32,
-}
-
-impl Default for Options {
-    fn default() -> Self {
-        Options {
-            free_pattern: 0x00,
-            replica_id: 0,
-            format_seq: 0,
-        }
-    }
 }
 
 impl Options {
@@ -111,7 +101,12 @@ pub fn open<D: BlockDevice>(mut dev: D, opts: Options) -> Result<Store<D>> {
         return Err(Error::InvalidHeader);
     }
 
-    Ok(Store { dev, opts, header: hdr, index: MemIndex::new() })
+    Ok(Store {
+        dev,
+        opts,
+        header: hdr,
+        index: MemIndex::new(),
+    })
 }
 
 impl<D: BlockDevice> Store<D> {
@@ -227,8 +222,8 @@ impl<D: BlockDevice> Store<D> {
             Some(e) => (e.generation, e.descriptor_block),
             None => return None,
         };
-        let result = verify_and_read_record(&mut self.dev, descriptor_block)
-            .and_then(|opt| match opt {
+        let result =
+            verify_and_read_record(&mut self.dev, descriptor_block).and_then(|opt| match opt {
                 Some(rec) => Ok((generation, rec.value)),
                 None => Err(Error::CorruptRecord),
             });

@@ -23,10 +23,7 @@ pub fn open_replicas<D: BlockDevice>(devices: Vec<D>, opts: Options) -> Result<R
 }
 
 /// Open all devices as replicas with full recovery (Open → Recover → BuildIndex).
-pub fn recover_replicas<D: BlockDevice>(
-    devices: Vec<D>,
-    opts: Options,
-) -> Result<ReplicaSet<D>> {
+pub fn recover_replicas<D: BlockDevice>(devices: Vec<D>, opts: Options) -> Result<ReplicaSet<D>> {
     let mut stores: Vec<Store<D>> = Vec::with_capacity(devices.len());
     for dev in devices {
         let mut s = open(dev, opts.clone())?;

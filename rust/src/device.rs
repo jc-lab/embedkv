@@ -35,11 +35,15 @@ impl MemDevice {
 
     /// Wrap existing bytes as a MemDevice (bytes are used directly, not copied).
     pub fn from_bytes(block_size: u32, data: Vec<u8>) -> Result<Self> {
-        if data.len() % block_size as usize != 0 {
+        if !data.len().is_multiple_of(block_size as usize) {
             return Err(Error::SizeMismatch);
         }
         let block_count = (data.len() / block_size as usize) as u32;
-        Ok(MemDevice { block_size, block_count, data })
+        Ok(MemDevice {
+            block_size,
+            block_count,
+            data,
+        })
     }
 
     /// Return a reference to the raw storage bytes.
@@ -62,7 +66,8 @@ impl BlockDevice for MemDevice {
             return Err(Error::InvalidBlock);
         }
         let off = index as usize * self.block_size as usize;
-        buf[..self.block_size as usize].copy_from_slice(&self.data[off..off + self.block_size as usize]);
+        buf[..self.block_size as usize]
+            .copy_from_slice(&self.data[off..off + self.block_size as usize]);
         Ok(())
     }
 
@@ -71,7 +76,8 @@ impl BlockDevice for MemDevice {
             return Err(Error::InvalidBlock);
         }
         let off = index as usize * self.block_size as usize;
-        self.data[off..off + self.block_size as usize].copy_from_slice(&buf[..self.block_size as usize]);
+        self.data[off..off + self.block_size as usize]
+            .copy_from_slice(&buf[..self.block_size as usize]);
         Ok(())
     }
 
@@ -105,7 +111,11 @@ impl FileDevice {
             return Err(Error::SizeMismatch);
         }
         let block_count = (size / block_size as u64) as u32;
-        Ok(FileDevice { file, block_size, block_count })
+        Ok(FileDevice {
+            file,
+            block_size,
+            block_count,
+        })
     }
 
     /// Create (or truncate) a file sized to block_size * block_count.
@@ -117,7 +127,11 @@ impl FileDevice {
             .truncate(true)
             .open(path)?;
         file.set_len(block_size as u64 * block_count as u64)?;
-        Ok(FileDevice { file, block_size, block_count })
+        Ok(FileDevice {
+            file,
+            block_size,
+            block_count,
+        })
     }
 }
 

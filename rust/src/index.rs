@@ -14,6 +14,12 @@ pub struct MemIndex {
     entries: HashMap<String, IndexEntry>,
 }
 
+impl Default for MemIndex {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MemIndex {
     pub fn new() -> Self {
         MemIndex {

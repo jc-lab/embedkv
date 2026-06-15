@@ -410,7 +410,14 @@ impl<D: BlockDevice> Replica<D> {
         let free_blocks = self.find_free_blocks(needed)?;
 
         let descriptor_block = free_blocks[0];
-        self.write_record(descriptor_block, &free_blocks[1..], key, generation, value, user_flags)?;
+        self.write_record(
+            descriptor_block,
+            &free_blocks[1..],
+            key,
+            generation,
+            value,
+            user_flags,
+        )?;
         self.dev.flush()?;
 
         self.index.put(IndexEntry {

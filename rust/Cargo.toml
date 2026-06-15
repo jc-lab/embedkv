@@ -1,7 +1,11 @@
 [package]
 name = "embedkv"
-version = "0.1.0"
 edition = "2021"
+description = "A compact, block-based embedded key-value store designed for constrained storage environments such as microcontrollers, UEFI, and small flash devices."
+
+license.workspace = true
+repository.workspace = true
+version.workspace = true
 
 [lib]
 name = "embedkv"

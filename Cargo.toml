@@ -2,3 +2,11 @@
 members = ["rust"]
 exclude = ["rust/fuzz"]
 resolver = "2"
+
+[workspace.package]
+description = "A compact, block-based embedded key-value store designed for constrained storage environments such as microcontrollers, UEFI, and small flash devices."
+authors = ["Joseph Lee <joseph@jc-lab.net>"]
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/jc-lab/embedkv"
+version = "0.0.1"

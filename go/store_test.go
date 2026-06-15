@@ -2,6 +2,7 @@ package embedkv
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 )
 
@@ -9,10 +10,10 @@ import (
 func newTestStore(t *testing.T, blockSize, blockCount uint32) *Store {
 	t.Helper()
 	dev := NewMemDevice(blockSize, blockCount)
-	if err := Format(dev, DefaultOptions()); err != nil {
+	if err := Format([]BlockDevice{dev}, DefaultOptions()); err != nil {
 		t.Fatal(err)
 	}
-	s, err := Open(dev, DefaultOptions())
+	s, err := Open([]BlockDevice{dev}, DefaultOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -22,12 +23,81 @@ func newTestStore(t *testing.T, blockSize, blockCount uint32) *Store {
 	return s
 }
 
+func TestMultiReplicaWriteAndFaultTolerance(t *testing.T) {
+	const blockSize = 256
+	dev0 := NewMemDevice(blockSize, 16)
+	dev1 := NewMemDevice(blockSize, 16)
+	devs := []BlockDevice{dev0, dev1}
+
+	if err := Format(devs, DefaultOptions()); err != nil {
+		t.Fatal(err)
+	}
+	// replica_id is stamped per device (base + index).
+	if got := le.Uint32(dev1.Bytes()[16:]); got != 1 {
+		t.Fatalf("replica 1 replica_id = %d, want 1", got)
+	}
+
+	s, err := Open(devs, DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.BuildIndex(); err != nil {
+		t.Fatal(err)
+	}
+	if s.ReplicaCount() != 2 {
+		t.Fatalf("ReplicaCount = %d, want 2", s.ReplicaCount())
+	}
+	if err := s.Put([]byte("k"), []byte("v")); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	// Both replicas must independently hold the record.
+	for i, dev := range []*MemDevice{dev0, dev1} {
+		one, err := Open([]BlockDevice{dev}, DefaultOptions())
+		if err != nil {
+			t.Fatalf("replica %d open: %v", i, err)
+		}
+		if err := one.BuildIndex(); err != nil {
+			t.Fatal(err)
+		}
+		got, err := one.Get([]byte("k"))
+		if err != nil || string(got) != "v" {
+			t.Fatalf("replica %d: got %q err %v", i, got, err)
+		}
+		one.Close()
+	}
+
+	// Corrupt replica 0's data block entirely; the store must still read from replica 1.
+	garbage := make([]byte, blockSize)
+	for j := range garbage {
+		garbage[j] = 0x5A
+	}
+	dev0.WriteBlock(1, garbage)
+
+	s2, err := Open(devs, DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s2.BuildIndex(); err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	got, err := s2.Get([]byte("k"))
+	if err != nil {
+		t.Fatalf("expected read to survive replica-0 corruption: %v", err)
+	}
+	if string(got) != "v" {
+		t.Fatalf("got %q, want v", got)
+	}
+}
+
 func TestFormatOpen(t *testing.T) {
 	dev := NewMemDevice(256, 16)
-	if err := Format(dev, DefaultOptions()); err != nil {
+	if err := Format([]BlockDevice{dev}, DefaultOptions()); err != nil {
 		t.Fatal("Format:", err)
 	}
-	s, err := Open(dev, DefaultOptions())
+	s, err := Open([]BlockDevice{dev}, DefaultOptions())
 	if err != nil {
 		t.Fatal("Open:", err)
 	}
@@ -39,7 +109,7 @@ func TestFormatOpen(t *testing.T) {
 
 func TestOpenInvalidMagic(t *testing.T) {
 	dev := NewMemDevice(256, 8)
-	if _, err := Open(dev, DefaultOptions()); err != ErrInvalidHeader {
+	if _, err := Open([]BlockDevice{dev}, DefaultOptions()); err != ErrInvalidHeader {
 		t.Fatalf("expected ErrInvalidHeader, got %v", err)
 	}
 }
@@ -116,10 +186,10 @@ func TestPutUpdate(t *testing.T) {
 func TestUpdateFreesOldBlocks(t *testing.T) {
 	const blockSize = 256
 	dev := NewMemDevice(blockSize, 6) // block 0=header, blocks 1-5 data
-	if err := Format(dev, DefaultOptions()); err != nil {
+	if err := Format([]BlockDevice{dev}, DefaultOptions()); err != nil {
 		t.Fatal(err)
 	}
-	s, err := Open(dev, DefaultOptions())
+	s, err := Open([]BlockDevice{dev}, DefaultOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,10 +268,10 @@ func TestMultipleKeys(t *testing.T) {
 
 func TestReopenPreservesData(t *testing.T) {
 	dev := NewMemDevice(256, 16)
-	if err := Format(dev, DefaultOptions()); err != nil {
+	if err := Format([]BlockDevice{dev}, DefaultOptions()); err != nil {
 		t.Fatal(err)
 	}
-	s, err := Open(dev, DefaultOptions())
+	s, err := Open([]BlockDevice{dev}, DefaultOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +283,7 @@ func TestReopenPreservesData(t *testing.T) {
 	}
 	s.Close()
 
-	s2, err := Open(dev, DefaultOptions())
+	s2, err := Open([]BlockDevice{dev}, DefaultOptions())
 	if err != nil {
 		t.Fatal("reopen:", err)
 	}
@@ -250,7 +320,7 @@ func TestEmptyValue(t *testing.T) {
 func TestValueExactlyFillsDescriptor(t *testing.T) {
 	const blockSize = 256
 	k := []byte("exact")
-	capacity := int(blockSize - RecordDescriptorHeaderSize - uint32(len(k)))
+	capacity := int(blockSize - RecordDescriptorHeaderSize - uint32(len(k)) - BlockCRCSize)
 	val := make([]byte, capacity)
 	for i := range val {
 		val[i] = byte(i % 256)
@@ -285,9 +355,9 @@ func TestKeyTooLong(t *testing.T) {
 
 func TestNeededBlocks(t *testing.T) {
 	const bs = 256
-	k := []byte("k") // 1 byte key
-	firstCap := bs - RecordDescriptorHeaderSize - uint32(len(k)) // 219
-	chunkCap := bs - ValueChunkHeaderSize                        // 232
+	k := []byte("k")                                                          // 1 byte key
+	firstCap := bs - RecordDescriptorHeaderSize - uint32(len(k)) - BlockCRCSize // 219
+	chunkCap := bs - ValueChunkHeaderSize - BlockCRCSize                       // 232
 
 	cases := []struct {
 		vlen uint32
@@ -305,5 +375,101 @@ func TestNeededBlocks(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("neededBlocks(vlen=%d, bs=%d) = %d, want %d", tc.vlen, bs, got, tc.want)
 		}
+	}
+}
+
+func TestPutWithUserFlags(t *testing.T) {
+	s := newTestStore(t, 256, 16)
+	defer s.Close()
+
+	if err := s.Put([]byte("flagged"), []byte("val"), 0xCAFEBABE); err != nil {
+		t.Fatal(err)
+	}
+	// Get still returns value
+	got, err := s.Get([]byte("flagged"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "val" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestKeys(t *testing.T) {
+	s := newTestStore(t, 256, 32)
+	defer s.Close()
+
+	want := []string{"alpha", "beta", "gamma"}
+	for _, k := range want {
+		if err := s.Put([]byte(k), []byte("v")); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got := s.Keys()
+	if len(got) != len(want) {
+		t.Fatalf("Keys() returned %d keys, want %d", len(got), len(want))
+	}
+	set := make(map[string]bool)
+	for _, k := range got {
+		set[string(k)] = true
+	}
+	for _, k := range want {
+		if !set[k] {
+			t.Errorf("key %q missing from Keys()", k)
+		}
+	}
+}
+
+func TestIterate(t *testing.T) {
+	s := newTestStore(t, 256, 32)
+	defer s.Close()
+
+	wantKeys := []string{"key1", "key2", "key3"}
+	for _, k := range wantKeys {
+		if err := s.Put([]byte(k), []byte("v")); err != nil {
+			t.Fatalf("put %q: %v", k, err)
+		}
+	}
+
+	seen := make(map[string]bool)
+	err := s.Iterate(func(key []byte) error {
+		seen[string(key)] = true
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range wantKeys {
+		if !seen[k] {
+			t.Errorf("key %q not visited by Iterate", k)
+		}
+	}
+	if len(seen) != len(wantKeys) {
+		t.Errorf("Iterate visited %d keys, want %d", len(seen), len(wantKeys))
+	}
+}
+
+func TestIterateEarlyExit(t *testing.T) {
+	s := newTestStore(t, 256, 32)
+	defer s.Close()
+
+	for i := range [5]int{} {
+		s.Put([]byte{byte(i)}, []byte{byte(i)})
+	}
+	count := 0
+	sentinel := errors.New("stop")
+	err := s.Iterate(func(key []byte) error {
+		count++
+		if count == 2 {
+			return sentinel
+		}
+		return nil
+	})
+	if err != sentinel {
+		t.Fatalf("expected sentinel error, got %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("expected fn called 2 times, got %d", count)
 	}
 }

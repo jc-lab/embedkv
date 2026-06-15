@@ -12,6 +12,8 @@ pub enum Error {
     InvalidBlockSize,
     SizeMismatch,
     KeyTooLong,
+    NoReplicas,
+    ReplicaMismatch,
     Io(io::Error),
 }
 
@@ -27,6 +29,10 @@ impl fmt::Display for Error {
             Error::InvalidBlockSize => write!(f, "embedkv: invalid block size"),
             Error::SizeMismatch => write!(f, "embedkv: storage size mismatch"),
             Error::KeyTooLong => write!(f, "embedkv: key too long for block size"),
+            Error::NoReplicas => write!(f, "embedkv: at least one replica device is required"),
+            Error::ReplicaMismatch => {
+                write!(f, "embedkv: replica devices have mismatched geometry")
+            }
             Error::Io(e) => write!(f, "embedkv: io error: {}", e),
         }
     }

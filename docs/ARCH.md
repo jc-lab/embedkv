@@ -45,9 +45,12 @@ Block indices are `u32`. Special values:
 
 ### CRC32
 
-IEEE CRC-32 polynomial (reflected: `0xEDB88320`). When computing the CRC of a
-block, the four bytes of the `block_crc32` field are treated as `0x00000000`.
-The CRC covers the **entire block** (all `block_size` bytes).
+IEEE CRC-32 polynomial (reflected: `0xEDB88320`). The `block_crc32` field lives
+in the **last 4 bytes of every non-free block** — at offset `block_size - 4` —
+regardless of block type. It is **not** part of the type-specific header.
+
+When computing the CRC of a block, the four bytes at `block_size - 4` are treated
+as `0x00000000`. The CRC covers the **entire block** (all `block_size` bytes).
 
 Free blocks have no CRC.
 
@@ -81,7 +84,8 @@ allows zero-initialised files and erased flash to work without reformatting.
 
 To determine the type of a block:
 
-1. If `buf[0]` is `0x01`, `0x02`, or `0x03` — compute the CRC.
+1. If `buf[0]` is `0x01`, `0x02`, or `0x03` — compute the CRC and compare it with
+   the stored value at `block_size - 4`.
 2. If the CRC is valid → the block is a non-free block of that type.
 3. Otherwise, if `buf[0]` is `0x00` or `0xFF` → free block.
 4. Otherwise → garbage; treat as free during recovery.
@@ -93,12 +97,13 @@ To determine the type of a block:
 ### Layout
 
 ```
-┌──────────────────────────┬──────────────────────┐
-│  StorageHeader (32 B)    │  Padding / Reserved  │
-└──────────────────────────┴──────────────────────┘
+┌──────────────────────────┬──────────────────────┬─────────────────┐
+│  StorageHeader (28 B)    │  Padding / Reserved  │ block_crc32 (4B)│
+└──────────────────────────┴──────────────────────┴─────────────────┘
+  offset 0                                           offset block_size-4
 ```
 
-### StorageHeader — 32 bytes, CRC at offset 28
+### StorageHeader — 28 bytes (CRC stored separately at `block_size - 4`)
 
 | Offset | Size | Type   | Field           | Notes |
 |--------|------|--------|-----------------|-------|
@@ -108,10 +113,12 @@ To determine the type of a block:
 | 6      | 2    | `u16`  | `version_minor` | Current: `0` |
 | 8      | 4    | `u32`  | `block_size`    | Block size in bytes |
 | 12     | 4    | `u32`  | `block_count`   | Total blocks in storage |
-| 16     | 4    | `u32`  | `replica_id`    | Replica identifier |
+| 16     | 4    | `u32`  | `replica_id`    | Replica identifier (assigned per replica device) |
 | 20     | 4    | `u32`  | `format_seq`    | Format generation counter |
 | 24     | 4    | `u32`  | `flags`         | Reserved, set to `0` |
-| 28     | 4    | `u32`  | `block_crc32`   | CRC over entire block |
+
+The block CRC32 is stored in the last 4 bytes of the block (`block_size - 4`),
+common to all block types — see §2.
 
 ### Validation
 
@@ -135,14 +142,14 @@ blocks are chained via `next_chunk`.
 ### Block layout
 
 ```
-┌─────────────────────────────┬──────────────────┬────────────────────┬──────────┐
-│  RecordDescriptorHeader     │  Key bytes       │  First value       │ Padding  │
-│  (32 bytes)                 │  (key_size bytes)│  payload           │ (zeros)  │
-└─────────────────────────────┴──────────────────┴────────────────────┴──────────┘
-  offset 0                      offset 32          offset 32+key_size
+┌─────────────────────────────┬──────────────────┬───────────────┬─────────┬─────────────────┐
+│  RecordDescriptorHeader     │  Key bytes       │  First value  │ Padding │ block_crc32 (4B)│
+│  (32 bytes)                 │  (key_size bytes)│  payload      │ (zeros) │                 │
+└─────────────────────────────┴──────────────────┴───────────────┴─────────┴─────────────────┘
+  offset 0                      offset 32          offset 32+key_size       offset block_size-4
 ```
 
-### RecordDescriptorHeader — 32 bytes, CRC at offset 28
+### RecordDescriptorHeader — 32 bytes (CRC stored separately at `block_size - 4`)
 
 | Offset | Size | Type  | Field               | Notes |
 |--------|------|-------|---------------------|-------|
@@ -154,24 +161,26 @@ blocks are chained via `next_chunk`.
 | 12     | 4    | `u32` | `first_payload_size`| Value bytes in this block |
 | 16     | 4    | `u32` | `chunk_count`       | Total chunk count (descriptor = chunk 0) |
 | 20     | 4    | `u32` | `next_chunk`        | Block index of chunk 1, or `0xFFFFFFFF` |
-| 24     | 4    | `u32` | `flags`             | Reserved, set to `0` |
-| 28     | 4    | `u32` | `block_crc32`       | CRC over entire block |
+| 24     | 4    | `u32` | `flags`             | Internal flags, reserved — set to `0` |
+| 28     | 4    | `u32` | `user_flags`        | User-defined flags; preserved verbatim, meaning defined by the caller |
+
+The block CRC32 is stored in the last 4 bytes of the block (`block_size - 4`) — see §2.
 
 ### Key and payload offsets
 
 ```
 key_offset             = 32
 first_payload_offset   = 32 + key_size
-first_payload_capacity = block_size - 32 - key_size
+first_payload_capacity = block_size - 32 - key_size - 4   (reserve 4 bytes for the trailing CRC)
 ```
 
 Constraints:
-- `key_size < block_size - 32` (key must fit alongside the header)
+- `key_size <= block_size - 32 - 4` (key must fit alongside the header and CRC)
 - `first_payload_size <= first_payload_capacity`
 
 ### Key format
 
-The key is a UTF-8 string stored verbatim starting at offset `32`. Key equality
+The key is a UTF-8 string stored verbatim starting at offset `36`. Key equality
 is determined by direct byte comparison of the stored key against the requested key.
 
 ### Single-block record (value fits in descriptor)
@@ -192,9 +201,9 @@ next_chunk != 0xFFFFFFFF
 
 ### CRC scope
 
-`block_crc32` covers the full block (`block_size` bytes). Bytes 28–31 are treated
-as `0x00000000` during computation. Padding bytes after the value payload must be
-deterministic — the recommended value is `0x00`.
+`block_crc32` covers the full block (`block_size` bytes). The 4 bytes at
+`block_size - 4` are treated as `0x00000000` during computation. Padding bytes
+after the value payload must be deterministic — the recommended value is `0x00`.
 
 ---
 
@@ -205,28 +214,29 @@ Value chunks hold the portions of a value that did not fit in the descriptor.
 ### Block layout
 
 ```
-┌───────────────────────┬──────────────────────┬──────────┐
-│  ValueChunkHeader     │  Payload             │ Padding  │
-│  (24 bytes)           │  (payload_size bytes)│ (zeros)  │
-└───────────────────────┴──────────────────────┴──────────┘
-  offset 0                offset 24
+┌───────────────────────┬──────────────────────┬──────────┬─────────────────┐
+│  ValueChunkHeader     │  Payload             │ Padding  │ block_crc32 (4B)│
+│  (20 bytes)           │  (payload_size bytes)│ (zeros)  │                 │
+└───────────────────────┴──────────────────────┴──────────┴─────────────────┘
+  offset 0                offset 20                          offset block_size-4
 ```
 
-### ValueChunkHeader — 24 bytes, CRC at offset 20
+### ValueChunkHeader — 20 bytes (CRC stored separately at `block_size - 4`)
 
 | Offset | Size | Type  | Field              | Notes |
 |--------|------|-------|--------------------|-------|
 | 0      | 1    | `u8`  | `block_type`       | `0x03` |
-| 1      | 1    | `u8`  | `header_size`      | `24` |
+| 1      | 1    | `u8`  | `header_size`      | `20` |
 | 2      | 2    | `u16` | `flags`            | Reserved, set to `0` |
 | 4      | 4    | `u32` | `owner_descriptor` | Block index of the owning descriptor |
 | 8      | 4    | `u32` | `chunk_index`      | `1` for the first extra chunk, `2` for the second, … |
 | 12     | 4    | `u32` | `payload_size`     | Payload bytes in this block |
 | 16     | 4    | `u32` | `next_chunk`       | Block index of next chunk, or `0xFFFFFFFF` |
-| 20     | 4    | `u32` | `block_crc32`      | CRC over entire block |
+
+The block CRC32 is stored in the last 4 bytes of the block (`block_size - 4`) — see §2.
 
 Constraints:
-- `payload_size <= block_size - 24`
+- `payload_size <= block_size - 20 - 4` (reserve 4 bytes for the trailing CRC)
 - `chunk_index >= 1` (the descriptor counts as chunk index 0)
 
 ---
@@ -323,8 +333,8 @@ following are true:
 - Descriptor CRC mismatch
 - `block_type != 0x02`
 - `header_size != 32`
-- `key_size >= block_size - 32`
-- `first_payload_size > block_size - 32 - key_size`
+- `key_size > block_size - 32 - 4`
+- `first_payload_size > block_size - 32 - key_size - 4`
 - `chunk_count == 0`
 - Sum of payload sizes ≠ `total_size`
 - Actual chunk count in chain ≠ `chunk_count`
@@ -332,10 +342,10 @@ following are true:
 - Chunk chain contains a cycle
 - Any value chunk CRC mismatch
 - Any value chunk `block_type != 0x03`
-- Any value chunk `header_size != 24`
+- Any value chunk `header_size != 20`
 - Any value chunk `owner_descriptor` ≠ the descriptor's block index
 - Any value chunk `chunk_index` out of expected sequence
-- Any value chunk `payload_size > block_size - 24`
+- Any value chunk `payload_size > block_size - 20 - 4`
 
 ---
 
@@ -365,11 +375,29 @@ The index is ephemeral — it is rebuilt by scanning the storage at open time (v
 ## 13. Replica Support
 
 A replica is a complete, independent copy of the entire storage — not a block-level
-mirror.
+mirror. A store is opened over **one or more replica devices**; a single-device
+store is simply the one-replica case.
 
-### Write order (per replica, sequential)
+### Opening and formatting
 
-For each replica: write new record → flush → erase old record → flush.
+`Format` and `Open` both take a list of replica devices. On `Format`, replica `i`
+is stamped with `replica_id = base + i` (the base comes from options). All replicas
+must share the same `block_size` and `block_count`; opening rejects mismatched
+geometry.
+
+### Write order (fan-out, per replica sequential)
+
+A write is applied to every replica in turn. The same `generation`
+(`max existing generation across replicas + 1`) is written to all replicas so they
+stay aligned. For each replica: write new record → flush → erase old record → flush.
+If a write or flush fails on one replica, a complete record may still survive on
+another.
+
+### Read
+
+A read returns the value from the replica holding the highest-generation
+**complete** record. If a replica's record is corrupt or absent, the read falls
+back to the next replica.
 
 ### Recovery
 

@@ -24,7 +24,7 @@ const (
 
 func openStore(t *testing.T, dev BlockDevice) *Store {
 	t.Helper()
-	s, err := Open(dev, DefaultOptions())
+	s, err := Open([]BlockDevice{dev}, DefaultOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func readFixtureFile(t *testing.T, relPath string) []byte {
 func buildSmallValue(t *testing.T) []byte {
 	t.Helper()
 	dev := NewMemDevice(fixtureBlockSize, 8)
-	if err := Format(dev, DefaultOptions()); err != nil {
+	if err := Format([]BlockDevice{dev}, DefaultOptions()); err != nil {
 		t.Fatal(err)
 	}
 	s := openStore(t, dev)
@@ -75,7 +75,7 @@ func buildSmallValue(t *testing.T) []byte {
 func buildLargeValue(t *testing.T) []byte {
 	t.Helper()
 	dev := NewMemDevice(fixtureBlockSize, 16)
-	if err := Format(dev, DefaultOptions()); err != nil {
+	if err := Format([]BlockDevice{dev}, DefaultOptions()); err != nil {
 		t.Fatal(err)
 	}
 	s := openStore(t, dev)
@@ -93,7 +93,7 @@ func buildLargeValue(t *testing.T) []byte {
 func buildMultiKey(t *testing.T) []byte {
 	t.Helper()
 	dev := NewMemDevice(fixtureBlockSize, 16)
-	if err := Format(dev, DefaultOptions()); err != nil {
+	if err := Format([]BlockDevice{dev}, DefaultOptions()); err != nil {
 		t.Fatal(err)
 	}
 	s := openStore(t, dev)
@@ -115,7 +115,7 @@ func buildMultiKey(t *testing.T) []byte {
 func buildRecoveryPartialWrite(t *testing.T) []byte {
 	t.Helper()
 	dev := NewMemDevice(fixtureBlockSize, 16)
-	if err := Format(dev, DefaultOptions()); err != nil {
+	if err := Format([]BlockDevice{dev}, DefaultOptions()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -129,7 +129,7 @@ func buildRecoveryPartialWrite(t *testing.T) []byte {
 	// Inject a valid gen-2 descriptor pointing to block 3 as chunk
 	key := []byte("power")
 	keyLen := uint32(len(key))
-	firstCap := fixtureBlockSize - RecordDescriptorHeaderSize - keyLen
+	firstCap := firstPayloadCapacity(fixtureBlockSize, keyLen)
 
 	descBuf := make([]byte, fixtureBlockSize)
 	dh := RecordDescriptorHeader{
@@ -144,7 +144,7 @@ func buildRecoveryPartialWrite(t *testing.T) []byte {
 	}
 	marshalDescriptorHeader(&dh, descBuf)
 	copy(descBuf[RecordDescriptorHeaderSize:], key)
-	dh.BlockCRC32 = computeBlockCRC32(descBuf, 28)
+	writeBlockCRC(descBuf)
 	marshalDescriptorHeader(&dh, descBuf)
 	dev.WriteBlock(2, descBuf) // gen-2 descriptor in block 2
 
@@ -162,7 +162,7 @@ func buildRecoveryPartialWrite(t *testing.T) []byte {
 func buildRecoveryPartialErase(t *testing.T) []byte {
 	t.Helper()
 	dev := NewMemDevice(fixtureBlockSize, 16)
-	if err := Format(dev, DefaultOptions()); err != nil {
+	if err := Format([]BlockDevice{dev}, DefaultOptions()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -202,7 +202,7 @@ func buildRecoveryPartialErase(t *testing.T) []byte {
 	}
 	marshalChunkHeader(&ch, chunkBuf)
 	copy(chunkBuf[ValueChunkHeaderSize:], []byte("orph"))
-	ch.BlockCRC32 = computeBlockCRC32(chunkBuf, 20)
+	writeBlockCRC(chunkBuf)
 	marshalChunkHeader(&ch, chunkBuf)
 	dev.WriteBlock(freeIdx, chunkBuf)
 
@@ -245,7 +245,7 @@ func loadFixture(t *testing.T, path string) *MemDevice {
 
 func testFixtureSmallValue(t *testing.T) {
 	dev := loadFixture(t, "testdata/small_value.bin")
-	s, err := Open(dev, DefaultOptions())
+	s, err := Open([]BlockDevice{dev}, DefaultOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +265,7 @@ func testFixtureSmallValue(t *testing.T) {
 
 func testFixtureLargeValue(t *testing.T) {
 	dev := loadFixture(t, "testdata/large_value.bin")
-	s, err := Open(dev, DefaultOptions())
+	s, err := Open([]BlockDevice{dev}, DefaultOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,7 +290,7 @@ func testFixtureLargeValue(t *testing.T) {
 
 func testFixtureMultiKey(t *testing.T) {
 	dev := loadFixture(t, "testdata/multi_key.bin")
-	s, err := Open(dev, DefaultOptions())
+	s, err := Open([]BlockDevice{dev}, DefaultOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,7 +317,7 @@ func testFixtureMultiKey(t *testing.T) {
 
 func testFixtureRecoveryPartialWrite(t *testing.T) {
 	dev := loadFixture(t, "testdata/recovery/partial_write.bin")
-	s, err := Open(dev, DefaultOptions())
+	s, err := Open([]BlockDevice{dev}, DefaultOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +351,7 @@ func testFixtureRecoveryPartialWrite(t *testing.T) {
 
 func testFixtureRecoveryPartialErase(t *testing.T) {
 	dev := loadFixture(t, "testdata/recovery/partial_erase.bin")
-	s, err := Open(dev, DefaultOptions())
+	s, err := Open([]BlockDevice{dev}, DefaultOptions())
 	if err != nil {
 		t.Fatal(err)
 	}

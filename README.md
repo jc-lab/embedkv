@@ -11,7 +11,7 @@ so a storage written by one implementation can be read by the other.
 ## Features
 
 - Fixed-size block I/O — every read and write is exactly one block
-- Per-block CRC32 integrity (IEEE polynomial)
+- Per-block CRC32 integrity (IEEE polynomial), stored in the last 4 bytes of every non-free block
 - UTF-8 string keys stored inside each record descriptor
 - Copy-on-write updates: new record is fully flushed before the old one is erased
 - Power-loss safe: recovery selects the highest-generation complete record
@@ -51,10 +51,13 @@ import "github.com/jc-lab/embedkv/go"
 
 // Create a new storage file (256-byte blocks, 1024 blocks = 256 KiB)
 dev, err := embedkv.CreateFileDevice("data.bin", 256, 1024)
-embedkv.Format(dev, embedkv.DefaultOptions())
+
+// Format / Open take a list of replica devices; a single device is a 1-element slice
+devs := []embedkv.BlockDevice{dev}
+embedkv.Format(devs, embedkv.DefaultOptions())
 
 // Open and build the in-memory index
-s, err := embedkv.Open(dev, embedkv.DefaultOptions())
+s, err := embedkv.Open(devs, embedkv.DefaultOptions())
 s.Recover()
 s.BuildIndex()
 
@@ -64,8 +67,8 @@ val, err := s.Get([]byte("config"))
 s.Delete([]byte("config"))
 
 // After an unclean shutdown, run recovery first
-s, _ = embedkv.Open(dev, embedkv.DefaultOptions())
-s.Recover()     // scan + garbage-collect
+s, _ = embedkv.Open(devs, embedkv.DefaultOptions())
+s.Recover()     // scan + garbage-collect (each replica independently)
 s.BuildIndex()  // rebuild in-memory index
 ```
 
@@ -76,19 +79,21 @@ s.BuildIndex()  // rebuild in-memory index
 ```rust
 use embedkv::{format, open, MemDevice, Options};
 
-// In-memory device (useful for testing / embedded RAM buffers)
-let mut dev = MemDevice::new(256, 1024);
-format(&mut dev, &Options::default()).unwrap();
+// In-memory devices (useful for testing / embedded RAM buffers).
+// Format / open take a list of replica devices; a single device is a 1-element Vec.
+let mut devs = vec![MemDevice::new(256, 1024)];
+format(&mut devs, &Options::default()).unwrap();
 
-let mut s = open(dev, Options::default()).unwrap();
+let mut s = open(devs, Options::default()).unwrap();
 s.build_index().unwrap();
 
 s.put(b"config", b"{\"version\":1}").unwrap();
 let val = s.get(b"config").unwrap();
 s.delete(b"config").unwrap();
 
-// Recovery after power loss
-let mut s = open(dev, Options::default()).unwrap();
+// Recovery after power loss: reclaim the devices, then reopen
+let devs = s.into_devices();
+let mut s = open(devs, Options::default()).unwrap();
 s.recover().unwrap();
 s.build_index().unwrap();
 ```
@@ -107,12 +112,12 @@ embedkv = { git = "https://github.com/jc-lab/embedkv", package = "embedkv" }
 Both implementations follow the same three-step open sequence:
 
 ```
-Open(device, options)   →   Recover() [optional]   →   BuildIndex()
+Open(devices, options)   →   Recover() [optional]   →   BuildIndex()
 ```
 
 | Step | Purpose | When to call |
 |------|---------|--------------|
-| `Open` / `open` | Validate storage header | Always |
+| `Open` / `open` | Validate every replica's storage header | Always |
 | `Recover` / `recover` | Scan all blocks, erase garbage, flush | After unclean shutdown |
 | `BuildIndex` / `build_index` | Populate in-memory key index | Always (after Recover if used) |
 
@@ -120,11 +125,12 @@ Open(device, options)   →   Recover() [optional]   →   BuildIndex()
 
 | Go | Rust | Description |
 |----|------|-------------|
-| `Format(dev, opts)` | `format(&mut dev, &opts)` | Initialise a new storage |
-| `s.Get(key)` | `s.get(key)` | Read value by key |
-| `s.Put(key, value)` | `s.put(key, value)` | Write or update a key |
-| `s.Delete(key)` | `s.delete(key)` | Remove a key |
-| `s.Recover()` | `s.recover()` | Garbage-collect after crash |
+| `Format(devs, opts)` | `format(&mut devs, &opts)` | Initialise new storage on each replica |
+| `Open(devs, opts)` | `open(devs, opts)` | Open one or more replica devices |
+| `s.Get(key)` | `s.get(key)` | Read value (highest complete generation across replicas) |
+| `s.Put(key, value)` | `s.put(key, value)` | Write or update a key on every replica |
+| `s.Delete(key)` | `s.delete(key)` | Remove a key from every replica |
+| `s.Recover()` | `s.recover()` | Garbage-collect each replica after crash |
 | `s.BuildIndex()` | `s.build_index()` | Build in-memory index |
 
 ### Devices
@@ -135,20 +141,32 @@ Open(device, options)   →   Recover() [optional]   →   BuildIndex()
 | `CreateFileDevice(path, bs, n)` | — | Create new file-backed storage |
 | `OpenFileDevice(path, bs)` | `FileDevice::open(path, bs)` | Open existing file |
 
-### Replica set
+### Replicas
+
+A store is opened over one or more replica devices. Writes fan out to every
+replica; reads return the highest complete generation across replicas, so a read
+survives corruption or loss of any single replica.
 
 ```go
-// Go
-r, _ := embedkv.RecoverReplicas([]embedkv.BlockDevice{dev0, dev1, dev2}, opts)
-r.Put([]byte("k"), []byte("v"))
-val, _ := r.Get([]byte("k"))
+// Go — three replicas
+devs := []embedkv.BlockDevice{dev0, dev1, dev2}
+embedkv.Format(devs, opts)
+s, _ := embedkv.Open(devs, opts)
+s.Recover()      // each replica is recovered independently
+s.BuildIndex()
+s.Put([]byte("k"), []byte("v"))   // written to all three replicas
+val, _ := s.Get([]byte("k"))      // best generation across replicas
 ```
 
 ```rust
-// Rust
-let mut r = embedkv::recover_replicas(vec![dev0, dev1, dev2], opts).unwrap();
-r.put(b"k", b"v").unwrap();
-let val = r.get(b"k").unwrap();
+// Rust — three replicas
+let mut devs = vec![dev0, dev1, dev2];
+embedkv::format(&mut devs, &opts).unwrap();
+let mut s = embedkv::open(devs, opts).unwrap();
+s.recover().unwrap();
+s.build_index().unwrap();
+s.put(b"k", b"v").unwrap();
+let val = s.get(b"k").unwrap();
 ```
 
 ---

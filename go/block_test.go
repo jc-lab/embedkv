@@ -35,7 +35,7 @@ func TestDescriptorHeaderRoundtrip(t *testing.T) {
 	k := []byte("testkey")
 	in := RecordDescriptorHeader{
 		BlockType:        BlockTypeRecordDescriptor,
-		HeaderSize:       32,
+		HeaderSize:       uint8(RecordDescriptorHeaderSize),
 		KeySize:          uint16(len(k)),
 		Generation:       3,
 		TotalSize:        100,
@@ -59,7 +59,7 @@ func TestChunkHeaderRoundtrip(t *testing.T) {
 
 	in := ValueChunkHeader{
 		BlockType:       BlockTypeValueChunk,
-		HeaderSize:      24,
+		HeaderSize:      uint8(ValueChunkHeaderSize),
 		OwnerDescriptor: 1,
 		ChunkIndex:      1,
 		PayloadSize:     488,
@@ -87,17 +87,15 @@ func TestCRCStorageHeader(t *testing.T) {
 		BlockCount:   64,
 	}
 	marshalStorageHeader(&hdr, buf)
-	hdr.BlockCRC32 = computeBlockCRC32(buf, 28)
-	marshalStorageHeader(&hdr, buf)
+	writeBlockCRC(buf) // block CRC lives in the last 4 bytes
 
 	var out StorageHeader
-	unmarshalStorageHeader(buf, &out)
-	if computeBlockCRC32(buf, 28) != out.BlockCRC32 {
+	if !unmarshalStorageHeader(buf, &out) {
 		t.Fatal("CRC mismatch on read-back")
 	}
 
 	buf[5] ^= 0xFF
-	if computeBlockCRC32(buf, 28) == out.BlockCRC32 {
+	if verifyBlockCRC(buf) {
 		t.Fatal("expected CRC failure after corruption")
 	}
 }
@@ -109,7 +107,7 @@ func TestCRCDescriptorHeader(t *testing.T) {
 
 	hdr := RecordDescriptorHeader{
 		BlockType:        BlockTypeRecordDescriptor,
-		HeaderSize:       32,
+		HeaderSize:       uint8(RecordDescriptorHeaderSize),
 		KeySize:          uint16(len(k)),
 		Generation:       1,
 		TotalSize:        5,
@@ -120,17 +118,15 @@ func TestCRCDescriptorHeader(t *testing.T) {
 	marshalDescriptorHeader(&hdr, buf)
 	copy(buf[RecordDescriptorHeaderSize:], k)
 	copy(buf[RecordDescriptorHeaderSize+uint32(len(k)):], []byte("world"))
-	hdr.BlockCRC32 = computeBlockCRC32(buf, 28)
-	marshalDescriptorHeader(&hdr, buf)
+	writeBlockCRC(buf)
 
 	var out RecordDescriptorHeader
-	unmarshalDescriptorHeader(buf, &out)
-	if computeBlockCRC32(buf, 28) != out.BlockCRC32 {
+	if !unmarshalDescriptorHeader(buf, &out) {
 		t.Fatal("descriptor CRC mismatch")
 	}
 
 	buf[40] ^= 0x01
-	if computeBlockCRC32(buf, 28) == out.BlockCRC32 {
+	if verifyBlockCRC(buf) {
 		t.Fatal("expected CRC failure after payload corruption")
 	}
 }
@@ -140,7 +136,7 @@ func TestClassifyBlock(t *testing.T) {
 	dev := NewMemDevice(blockSize, 8)
 	opts := DefaultOptions()
 
-	if err := Format(dev, opts); err != nil {
+	if err := Format([]BlockDevice{dev}, opts); err != nil {
 		t.Fatal(err)
 	}
 

@@ -8,7 +8,7 @@ import (
 // openWithRecovery is a helper that runs the full Open → Recover → BuildIndex sequence.
 func openWithRecovery(t *testing.T, dev BlockDevice) *Store {
 	t.Helper()
-	s, err := Open(dev, DefaultOptions())
+	s, err := Open([]BlockDevice{dev}, DefaultOptions())
 	if err != nil {
 		t.Fatal("Open:", err)
 	}
@@ -24,7 +24,7 @@ func openWithRecovery(t *testing.T, dev BlockDevice) *Store {
 // openNormal is a helper that runs Open → BuildIndex (no recovery).
 func openNormal(t *testing.T, dev BlockDevice) *Store {
 	t.Helper()
-	s, err := Open(dev, DefaultOptions())
+	s, err := Open([]BlockDevice{dev}, DefaultOptions())
 	if err != nil {
 		t.Fatal("Open:", err)
 	}
@@ -36,7 +36,7 @@ func openNormal(t *testing.T, dev BlockDevice) *Store {
 
 func TestRecoverCleanStorage(t *testing.T) {
 	dev := NewMemDevice(256, 16)
-	if err := Format(dev, DefaultOptions()); err != nil {
+	if err := Format([]BlockDevice{dev}, DefaultOptions()); err != nil {
 		t.Fatal(err)
 	}
 	s := openNormal(t, dev)
@@ -62,7 +62,7 @@ func TestRecoverCleanStorage(t *testing.T) {
 func TestRecoverRemovesGarbage(t *testing.T) {
 	const blockSize = 256
 	dev := NewMemDevice(blockSize, 16)
-	if err := Format(dev, DefaultOptions()); err != nil {
+	if err := Format([]BlockDevice{dev}, DefaultOptions()); err != nil {
 		t.Fatal(err)
 	}
 	s := openNormal(t, dev)
@@ -91,7 +91,7 @@ func TestRecoverRemovesGarbage(t *testing.T) {
 	descBuf := make([]byte, blockSize)
 	dh := RecordDescriptorHeader{
 		BlockType:        BlockTypeRecordDescriptor,
-		HeaderSize:       36,
+		HeaderSize:       uint8(RecordDescriptorHeaderSize),
 		KeySize:          uint16(len(key)),
 
 		Generation:       2,
@@ -103,14 +103,14 @@ func TestRecoverRemovesGarbage(t *testing.T) {
 	marshalDescriptorHeader(&dh, descBuf)
 	copy(descBuf[RecordDescriptorHeaderSize:], key)
 	copy(descBuf[RecordDescriptorHeaderSize+uint32(len(key)):], bytes.Repeat([]byte("X"), 100))
-	dh.BlockCRC32 = computeBlockCRC32(descBuf, 32)
+	writeBlockCRC(descBuf)
 	marshalDescriptorHeader(&dh, descBuf)
 	dev.WriteBlock(freeIdx, descBuf)
 
 	// Write garbage into chunk slot (invalid CRC)
 	garbageBuf := make([]byte, blockSize)
 	garbageBuf[0] = BlockTypeValueChunk
-	garbageBuf[1] = 24
+	garbageBuf[1] = uint8(ValueChunkHeaderSize)
 	dev.WriteBlock(corruptChunkIdx, garbageBuf)
 
 	s2 := openWithRecovery(t, dev)
@@ -140,7 +140,7 @@ func TestRecoverRemovesGarbage(t *testing.T) {
 func TestRecoverPowerLossBeforeFirstFlush(t *testing.T) {
 	const blockSize = 256
 	dev := NewMemDevice(blockSize, 16)
-	if err := Format(dev, DefaultOptions()); err != nil {
+	if err := Format([]BlockDevice{dev}, DefaultOptions()); err != nil {
 		t.Fatal(err)
 	}
 	s := openNormal(t, dev)
@@ -166,7 +166,7 @@ func TestRecoverPowerLossBeforeFirstFlush(t *testing.T) {
 	descBuf := make([]byte, blockSize)
 	dh := RecordDescriptorHeader{
 		BlockType:        BlockTypeRecordDescriptor,
-		HeaderSize:       36,
+		HeaderSize:       uint8(RecordDescriptorHeaderSize),
 		KeySize:          uint16(len(key)),
 
 		Generation:       2,
@@ -177,7 +177,7 @@ func TestRecoverPowerLossBeforeFirstFlush(t *testing.T) {
 	}
 	marshalDescriptorHeader(&dh, descBuf)
 	copy(descBuf[RecordDescriptorHeaderSize:], key)
-	dh.BlockCRC32 = computeBlockCRC32(descBuf, 32)
+	writeBlockCRC(descBuf)
 	marshalDescriptorHeader(&dh, descBuf)
 	dev.WriteBlock(freeIdx, descBuf)
 
@@ -198,7 +198,7 @@ func TestRecoverPowerLossBeforeFirstFlush(t *testing.T) {
 func TestRecoverOldBlockPartiallyFreed(t *testing.T) {
 	const blockSize = 256
 	dev := NewMemDevice(blockSize, 16)
-	if err := Format(dev, DefaultOptions()); err != nil {
+	if err := Format([]BlockDevice{dev}, DefaultOptions()); err != nil {
 		t.Fatal(err)
 	}
 	s := openNormal(t, dev)
@@ -225,7 +225,7 @@ func TestRecoverOldBlockPartiallyFreed(t *testing.T) {
 	chunkBuf := make([]byte, blockSize)
 	ch := ValueChunkHeader{
 		BlockType:       BlockTypeValueChunk,
-		HeaderSize:      24,
+		HeaderSize:      uint8(ValueChunkHeaderSize),
 		OwnerDescriptor: 99, // non-existent block
 		ChunkIndex:      1,
 		PayloadSize:     4,
@@ -233,7 +233,7 @@ func TestRecoverOldBlockPartiallyFreed(t *testing.T) {
 	}
 	marshalChunkHeader(&ch, chunkBuf)
 	copy(chunkBuf[ValueChunkHeaderSize:], []byte("orph"))
-	ch.BlockCRC32 = computeBlockCRC32(chunkBuf, 20)
+	writeBlockCRC(chunkBuf)
 	marshalChunkHeader(&ch, chunkBuf)
 	dev.WriteBlock(freeIdx, chunkBuf)
 
@@ -260,7 +260,7 @@ func TestRecoverReplicaSelectsBestGeneration(t *testing.T) {
 
 	newFormatted := func() *MemDevice {
 		dev := NewMemDevice(blockSize, 16)
-		if err := Format(dev, DefaultOptions()); err != nil {
+		if err := Format([]BlockDevice{dev}, DefaultOptions()); err != nil {
 			t.Fatal(err)
 		}
 		return dev
@@ -273,7 +273,7 @@ func TestRecoverReplicaSelectsBestGeneration(t *testing.T) {
 	key := []byte("item")
 
 	writeGens := func(dev BlockDevice, n int) {
-		s, err := Open(dev, DefaultOptions())
+		s, err := Open([]BlockDevice{dev}, DefaultOptions())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -281,7 +281,7 @@ func TestRecoverReplicaSelectsBestGeneration(t *testing.T) {
 			t.Fatal(err)
 		}
 		for i := 1; i <= n; i++ {
-			if err := s.put(key, []byte{byte(i)}); err != nil {
+			if err := s.Put(key, []byte{byte(i)}); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -306,7 +306,7 @@ func TestRecoverReplicaSelectsBestGeneration(t *testing.T) {
 		descBuf := make([]byte, blockSize)
 		dh := RecordDescriptorHeader{
 			BlockType:        BlockTypeRecordDescriptor,
-			HeaderSize:       36,
+			HeaderSize:       uint8(RecordDescriptorHeaderSize),
 			KeySize:          uint16(len(key)),
 	
 			Generation:       6,
@@ -317,18 +317,27 @@ func TestRecoverReplicaSelectsBestGeneration(t *testing.T) {
 		}
 		marshalDescriptorHeader(&dh, descBuf)
 		copy(descBuf[RecordDescriptorHeaderSize:], key)
-		dh.BlockCRC32 = computeBlockCRC32(descBuf, 32)
+		writeBlockCRC(descBuf)
 		marshalDescriptorHeader(&dh, descBuf)
 		dev1.WriteBlock(freeIdx, descBuf)
 	}
 
-	r, err := RecoverReplicas([]BlockDevice{dev0, dev1, dev2}, DefaultOptions())
+	// Open all three replicas as a single store; recovery + index build select
+	// the highest complete generation (gen 5) across replicas, ignoring the
+	// incomplete gen 6 on replica 1.
+	s, err := Open([]BlockDevice{dev0, dev1, dev2}, DefaultOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
+	if err := s.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.BuildIndex(); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
 
-	got, err := r.Get(key)
+	got, err := s.Get(key)
 	if err != nil {
 		t.Fatal(err)
 	}

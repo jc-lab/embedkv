@@ -12,7 +12,9 @@ go test -run TestGenerateFixtures ./go/...
 
 ## Common parameters
 
-All fixtures use **block_size = 256 bytes** and little-endian byte order.
+All fixtures use **block_size = 256 bytes** and little-endian byte order. Every
+non-free block stores its CRC32 in the last 4 bytes (offset `block_size - 4`),
+independent of block type (see [docs/ARCH.md](../docs/ARCH.md) §2).
 
 ## Files
 
@@ -35,9 +37,9 @@ Expected: `Get("hello") == "world"`
 | Block | Content |
 |-------|---------|
 | 0     | StorageHeader |
-| 1     | RecordDescriptor — key `"bigkey"`, first 218 B of value |
-| 2     | ValueChunk 1 — next 232 B |
-| 3     | ValueChunk 2 — remaining 50 B |
+| 1     | RecordDescriptor — key `"bigkey"`, first 214 B of value (256 − 32 header − 6 key − 4 CRC) |
+| 2     | ValueChunk 1 — next 232 B (256 − 20 header − 4 CRC) |
+| 3     | ValueChunk 2 — remaining 54 B |
 | 4–15  | Free |
 
 Value bytes: `[0x00, 0x01, 0x02, ..., 0xF3]` (byte i = i % 256 for i in 0..500).

@@ -25,7 +25,7 @@ fuzz_target!(|data: &[u8]| {
     };
 
     // Open may fail if the header is invalid — that's fine.
-    let Ok(mut s) = open(dev, Options::default()) else {
+    let Ok(mut s) = open(vec![dev], Options::default()) else {
         return;
     };
 

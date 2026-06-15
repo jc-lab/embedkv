@@ -27,11 +27,10 @@ const (
 	fuzzBlockCount = uint32(16)
 )
 
-// patchDescriptorCRC zeroes the CRC field at offset 28 and writes the correct CRC.
+// patchDescriptorCRC writes the correct block CRC into the last 4 bytes.
 // This lets the fuzzer exercise all descriptor-parsing paths after the CRC gate.
 func patchDescriptorCRC(buf []byte) {
-	le.PutUint32(buf[28:], 0)
-	le.PutUint32(buf[28:], computeBlockCRC32(buf, 28))
+	writeBlockCRC(buf)
 }
 
 // buildSeedDescriptor returns a block-sized buffer with a valid single-chunk descriptor.
@@ -70,15 +69,14 @@ func buildSeedChunk(blockSize, ownerBlock, chunkIndex uint32, payload []byte) []
 	}
 	marshalChunkHeader(&ch, buf)
 	copy(buf[ValueChunkHeaderSize:], payload)
-	le.PutUint32(buf[20:], 0)
-	le.PutUint32(buf[20:], computeBlockCRC32(buf, 20))
+	writeBlockCRC(buf)
 	return buf
 }
 
 // newFuzzStorage returns a formatted MemDevice ready for fuzz use.
 func newFuzzStorage() *MemDevice {
 	dev := NewMemDevice(fuzzBlockSize, fuzzBlockCount)
-	Format(dev, DefaultOptions())
+	Format([]BlockDevice{dev}, DefaultOptions())
 	return dev
 }
 
@@ -120,7 +118,7 @@ func FuzzRawBlock(f *testing.F) {
 		_ = rec
 
 		// BuildIndex on a storage that contains this block must not panic
-		s, err := Open(dev, DefaultOptions())
+		s, err := Open([]BlockDevice{dev}, DefaultOptions())
 		if err != nil {
 			return
 		}
@@ -142,24 +140,24 @@ func FuzzRawBlock(f *testing.F) {
 // next_chunk pointer that falls in range will encounter the fuzzed data.
 func FuzzCRCValidDescriptor(f *testing.F) {
 	// seed: minimal valid single-chunk record
-	f.Add(uint16(1), uint32(1), uint32(1), uint32(1), uint32(1), uint32(NullBlockIndex), uint32(0))
+	f.Add(uint16(1), uint32(1), uint32(1), uint32(1), uint32(1), uint32(NullBlockIndex), uint32(0), uint32(0))
 	// seed: exact-capacity value (fills descriptor payload completely)
 	cap0 := uint32(fuzzBlockSize - RecordDescriptorHeaderSize - 1) // key=1 byte
-	f.Add(uint16(1), uint32(1), cap0, cap0, uint32(1), uint32(NullBlockIndex), uint32(0))
+	f.Add(uint16(1), uint32(1), cap0, cap0, uint32(1), uint32(NullBlockIndex), uint32(0), uint32(0))
 	// seed: ChunkCount=MAX → must not cause huge allocation
-	f.Add(uint16(0), uint32(1), uint32(0xFFFFFFFF), uint32(0), uint32(0xFFFFFFFF), uint32(2), uint32(0))
+	f.Add(uint16(0), uint32(1), uint32(0xFFFFFFFF), uint32(0), uint32(0xFFFFFFFF), uint32(2), uint32(0), uint32(0))
 	// seed: TotalSize=MAX → must not cause huge allocation
-	f.Add(uint16(0), uint32(1), uint32(0xFFFFFFFF), uint32(0), uint32(2), uint32(2), uint32(0))
+	f.Add(uint16(0), uint32(1), uint32(0xFFFFFFFF), uint32(0), uint32(2), uint32(2), uint32(0), uint32(0xDEADBEEF))
 	// seed: KeySize at limit → should return nil (key too big for block)
-	f.Add(uint16(0xFFFF), uint32(1), uint32(0), uint32(0), uint32(1), uint32(NullBlockIndex), uint32(0))
+	f.Add(uint16(0xFFFF), uint32(1), uint32(0), uint32(0), uint32(1), uint32(NullBlockIndex), uint32(0), uint32(0))
 
 	f.Fuzz(func(t *testing.T,
 		keySize uint16,
-		generation, totalSize, firstPayloadSize, chunkCount, nextChunk, flags uint32,
+		generation, totalSize, firstPayloadSize, chunkCount, nextChunk, flags, userFlags uint32,
 	) {
 		buf := make([]byte, fuzzBlockSize)
 		buf[0] = BlockTypeRecordDescriptor
-		buf[1] = uint8(RecordDescriptorHeaderSize) // header_size always 32
+		buf[1] = uint8(RecordDescriptorHeaderSize) // header_size = 32
 		le.PutUint16(buf[2:], keySize)
 		le.PutUint32(buf[4:], generation)
 		le.PutUint32(buf[8:], totalSize)
@@ -167,7 +165,8 @@ func FuzzCRCValidDescriptor(f *testing.F) {
 		le.PutUint32(buf[16:], chunkCount)
 		le.PutUint32(buf[20:], nextChunk)
 		le.PutUint32(buf[24:], flags)
-		// Payload area (key + value) is left as zeros.
+		le.PutUint32(buf[28:], userFlags)
+		// block_crc32 lives in the last 4 bytes — payload area (key + value) is left as zeros.
 		patchDescriptorCRC(buf)
 
 		dev := NewMemDevice(fuzzBlockSize, fuzzBlockCount)
@@ -199,8 +198,7 @@ func FuzzCRCValidChunk(f *testing.F) {
 		le.PutUint32(buf[8:], chunkIndex)
 		le.PutUint32(buf[12:], payloadSize)
 		le.PutUint32(buf[16:], nextChunk)
-		le.PutUint32(buf[20:], 0)
-		le.PutUint32(buf[20:], computeBlockCRC32(buf, 20))
+		writeBlockCRC(buf)
 
 		dev := NewMemDevice(fuzzBlockSize, fuzzBlockCount)
 		// Put a CRC-valid descriptor in block 1 that points to block 2 as next_chunk,
@@ -241,7 +239,7 @@ func FuzzStoragePipeline(f *testing.F) {
 	// seed: valid storage with one record
 	{
 		dev := newFuzzStorage()
-		s, _ := Open(dev, DefaultOptions())
+		s, _ := Open([]BlockDevice{dev}, DefaultOptions())
 		s.BuildIndex()
 		s.Put([]byte("key"), []byte("value"))
 		s.Close()
@@ -250,7 +248,7 @@ func FuzzStoragePipeline(f *testing.F) {
 	// seed: valid storage with a large multi-chunk record
 	{
 		dev := newFuzzStorage()
-		s, _ := Open(dev, DefaultOptions())
+		s, _ := Open([]BlockDevice{dev}, DefaultOptions())
 		s.BuildIndex()
 		bigVal := make([]byte, int(fuzzBlockSize)*5)
 		for i := range bigVal {
@@ -270,7 +268,7 @@ func FuzzStoragePipeline(f *testing.F) {
 			return
 		}
 
-		s, err := Open(dev, DefaultOptions())
+		s, err := Open([]BlockDevice{dev}, DefaultOptions())
 		if err != nil {
 			return // invalid storage header — expected
 		}
@@ -301,7 +299,7 @@ func FuzzPutGetDelete(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, key, value []byte) {
 		dev := newFuzzStorage()
-		s, err := Open(dev, DefaultOptions())
+		s, err := Open([]BlockDevice{dev}, DefaultOptions())
 		if err != nil {
 			t.Fatal("Open on fresh storage failed:", err)
 		}

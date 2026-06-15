@@ -1,6 +1,9 @@
 use std::collections::HashSet;
 
-use crate::block::{unmarshal_chunk_header, unmarshal_descriptor_header, ValueChunkHeader};
+use crate::block::{
+    chunk_payload_capacity, first_payload_capacity, unmarshal_chunk_header,
+    unmarshal_descriptor_header, ValueChunkHeader,
+};
 
 use crate::device::BlockDevice;
 use crate::error::Result;
@@ -39,10 +42,10 @@ pub fn verify_and_read_record<D: BlockDevice>(
     if hdr.header_size as u32 != RECORD_DESCRIPTOR_HEADER_SIZE {
         return Ok(None);
     }
-    if hdr.key_size as u32 >= block_size - RECORD_DESCRIPTOR_HEADER_SIZE {
+    if hdr.key_size as u32 > block_size - RECORD_DESCRIPTOR_HEADER_SIZE - BLOCK_CRC_SIZE {
         return Ok(None);
     }
-    let first_payload_cap = block_size - RECORD_DESCRIPTOR_HEADER_SIZE - hdr.key_size as u32;
+    let first_payload_cap = first_payload_capacity(block_size, hdr.key_size as u32);
     if hdr.first_payload_size > first_payload_cap {
         return Ok(None);
     }
@@ -119,7 +122,7 @@ pub fn verify_and_read_record<D: BlockDevice>(
         if ch.chunk_index != expected_idx {
             return Ok(None);
         }
-        if ch.payload_size > block_size - VALUE_CHUNK_HEADER_SIZE {
+        if ch.payload_size > chunk_payload_capacity(block_size) {
             return Ok(None);
         }
 
@@ -144,8 +147,8 @@ pub fn verify_and_read_record<D: BlockDevice>(
 
 /// Calculate the number of blocks needed to store key + value.
 pub fn needed_blocks(key: &[u8], value: &[u8], block_size: u32) -> u32 {
-    let first_cap = block_size - RECORD_DESCRIPTOR_HEADER_SIZE - key.len() as u32;
-    let chunk_cap = block_size - VALUE_CHUNK_HEADER_SIZE;
+    let first_cap = first_payload_capacity(block_size, key.len() as u32);
+    let chunk_cap = chunk_payload_capacity(block_size);
     let vlen = value.len() as u32;
     if vlen <= first_cap {
         return 1;

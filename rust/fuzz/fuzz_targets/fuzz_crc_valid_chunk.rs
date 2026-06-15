@@ -8,10 +8,10 @@
 
 use arbitrary::Arbitrary;
 use embedkv::{
-    crc::compute_block_crc32,
+    crc::write_block_crc,
     format::{
-        BLOCK_TYPE_RECORD_DESCRIPTOR, BLOCK_TYPE_VALUE_CHUNK, RECORD_DESCRIPTOR_HEADER_SIZE,
-        VALUE_CHUNK_HEADER_SIZE,
+        BLOCK_CRC_SIZE, BLOCK_TYPE_RECORD_DESCRIPTOR, BLOCK_TYPE_VALUE_CHUNK,
+        RECORD_DESCRIPTOR_HEADER_SIZE, VALUE_CHUNK_HEADER_SIZE,
     },
     open, BlockDevice, MemDevice, Options,
 };
@@ -32,15 +32,14 @@ struct ChunkFields {
 fn build_crc_valid_chunk(fields: &ChunkFields) -> Vec<u8> {
     let mut buf = vec![0u8; BLOCK_SIZE as usize];
     buf[0] = BLOCK_TYPE_VALUE_CHUNK;
-    buf[1] = VALUE_CHUNK_HEADER_SIZE as u8; // 24 — correct header_size
+    buf[1] = VALUE_CHUNK_HEADER_SIZE as u8; // 20 — correct header_size
     buf[2..4].copy_from_slice(&fields.flags.to_le_bytes());
     buf[4..8].copy_from_slice(&fields.owner_descriptor.to_le_bytes());
     buf[8..12].copy_from_slice(&fields.chunk_index.to_le_bytes());
     buf[12..16].copy_from_slice(&fields.payload_size.to_le_bytes());
     buf[16..20].copy_from_slice(&fields.next_chunk.to_le_bytes());
-    // Patch CRC at offset 20
-    let crc = compute_block_crc32(&buf, 20);
-    buf[20..24].copy_from_slice(&crc.to_le_bytes());
+    // Block CRC lives in the last 4 bytes.
+    write_block_crc(&mut buf);
     buf
 }
 
@@ -50,7 +49,7 @@ fn build_descriptor_pointing_to(block2: u32, first_payload_cap: u32) -> Vec<u8> 
     let mut buf = vec![0u8; BLOCK_SIZE as usize];
     buf[0] = BLOCK_TYPE_RECORD_DESCRIPTOR;
     buf[1] = RECORD_DESCRIPTOR_HEADER_SIZE as u8;
-    // key_size = 1 ("k"), so first_payload_cap = BLOCK_SIZE - 32 - 1
+    // key_size = 1 ("k"), so first_payload_cap = BLOCK_SIZE - 32 - 1 - 4
     let key_size: u16 = 1;
     buf[2..4].copy_from_slice(&key_size.to_le_bytes());
     buf[4..8].copy_from_slice(&1u32.to_le_bytes()); // generation
@@ -60,19 +59,20 @@ fn build_descriptor_pointing_to(block2: u32, first_payload_cap: u32) -> Vec<u8> 
     buf[16..20].copy_from_slice(&2u32.to_le_bytes()); // chunk_count = 2
     buf[20..24].copy_from_slice(&block2.to_le_bytes()); // next_chunk
     buf[24..28].copy_from_slice(&0u32.to_le_bytes()); // flags
+    buf[28..32].copy_from_slice(&0u32.to_le_bytes()); // user_flags
     buf[RECORD_DESCRIPTOR_HEADER_SIZE as usize] = b'k'; // key byte
-    let crc = compute_block_crc32(&buf, 28);
-    buf[28..32].copy_from_slice(&crc.to_le_bytes());
+    // Block CRC lives in the last 4 bytes (written after key bytes).
+    write_block_crc(&mut buf);
     buf
 }
 
 fuzz_target!(|fields: ChunkFields| {
     let chunk_buf = build_crc_valid_chunk(&fields);
-    let first_payload_cap = BLOCK_SIZE - RECORD_DESCRIPTOR_HEADER_SIZE - 1; // key_size=1
+    let first_payload_cap = BLOCK_SIZE - RECORD_DESCRIPTOR_HEADER_SIZE - 1 - BLOCK_CRC_SIZE; // key_size=1
     let desc_buf = build_descriptor_pointing_to(2, first_payload_cap);
 
     let mut dev = MemDevice::new(BLOCK_SIZE, BLOCK_COUNT);
-    if embedkv::format(&mut dev, &Options::default()).is_err() {
+    if embedkv::format(std::slice::from_mut(&mut dev), &Options::default()).is_err() {
         return;
     }
     let _ = dev.write_block(1, &desc_buf);
@@ -84,7 +84,7 @@ fuzz_target!(|fields: ChunkFields| {
 
     let _ = embedkv::record::verify_and_read_record(&mut dev, 1);
 
-    if let Ok(mut s) = open(dev, Options::default()) {
+    if let Ok(mut s) = open(vec![dev], Options::default()) {
         let _ = s.build_index();
         let _ = s.get(b"k");
     }

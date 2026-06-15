@@ -20,7 +20,7 @@ fn load_fixture(name: &str) -> MemDevice {
 #[test]
 fn small_value_get() {
     let dev = load_fixture("small_value.bin");
-    let mut store = open(dev, Options::default()).expect("open");
+    let mut store = open(vec![dev], Options::default()).expect("open");
     store.build_index().expect("build_index");
     let val = store.get(b"hello").expect("get hello");
     assert_eq!(val, b"world");
@@ -29,7 +29,7 @@ fn small_value_get() {
 #[test]
 fn small_value_recover_get() {
     let dev = load_fixture("small_value.bin");
-    let mut store = open(dev, Options::default()).expect("open");
+    let mut store = open(vec![dev], Options::default()).expect("open");
     store.recover().expect("recover");
     store.build_index().expect("build_index");
     let val = store.get(b"hello").expect("get hello");
@@ -41,7 +41,7 @@ fn small_value_recover_get() {
 #[test]
 fn large_value_get() {
     let dev = load_fixture("large_value.bin");
-    let mut store = open(dev, Options::default()).expect("open");
+    let mut store = open(vec![dev], Options::default()).expect("open");
     store.build_index().expect("build_index");
     let val = store.get(b"bigkey").expect("get bigkey");
     let expected: Vec<u8> = (0u16..500).map(|i| (i % 256) as u8).collect();
@@ -51,7 +51,7 @@ fn large_value_get() {
 #[test]
 fn large_value_recover_get() {
     let dev = load_fixture("large_value.bin");
-    let mut store = open(dev, Options::default()).expect("open");
+    let mut store = open(vec![dev], Options::default()).expect("open");
     store.recover().expect("recover");
     store.build_index().expect("build_index");
     let val = store.get(b"bigkey").expect("get bigkey");
@@ -64,7 +64,7 @@ fn large_value_recover_get() {
 #[test]
 fn multi_key_get() {
     let dev = load_fixture("multi_key.bin");
-    let mut store = open(dev, Options::default()).expect("open");
+    let mut store = open(vec![dev], Options::default()).expect("open");
     store.build_index().expect("build_index");
     // All three keys must be readable; the fixture defines alpha/beta/gamma.
     let _alpha = store.get(b"alpha").expect("get alpha");
@@ -75,7 +75,7 @@ fn multi_key_get() {
 #[test]
 fn multi_key_recover_get() {
     let dev = load_fixture("multi_key.bin");
-    let mut store = open(dev, Options::default()).expect("open");
+    let mut store = open(vec![dev], Options::default()).expect("open");
     store.recover().expect("recover");
     store.build_index().expect("build_index");
     let _alpha = store.get(b"alpha").expect("get alpha");
@@ -88,7 +88,7 @@ fn multi_key_recover_get() {
 #[test]
 fn partial_write_after_recover() {
     let dev = load_fixture("recovery/partial_write.bin");
-    let mut store = open(dev, Options::default()).expect("open");
+    let mut store = open(vec![dev], Options::default()).expect("open");
     store.recover().expect("recover");
     store.build_index().expect("build_index");
     let val = store.get(b"power").expect("get power after recover");
@@ -100,7 +100,7 @@ fn partial_write_after_recover() {
 #[test]
 fn partial_erase_get() {
     let dev = load_fixture("recovery/partial_erase.bin");
-    let mut store = open(dev, Options::default()).expect("open");
+    let mut store = open(vec![dev], Options::default()).expect("open");
     store.build_index().expect("build_index");
     let val = store.get(b"power").expect("get power");
     assert_eq!(val, b"gen2-data");
@@ -109,7 +109,7 @@ fn partial_erase_get() {
 #[test]
 fn partial_erase_recover_get() {
     let dev = load_fixture("recovery/partial_erase.bin");
-    let mut store = open(dev, Options::default()).expect("open");
+    let mut store = open(vec![dev], Options::default()).expect("open");
     store.recover().expect("recover");
     store.build_index().expect("build_index");
     let val = store.get(b"power").expect("get power after recover");
@@ -123,8 +123,8 @@ fn round_trip_mem() {
     use embedkv::format;
 
     let mut dev = MemDevice::new(256, 64);
-    format(&mut dev, &Options::default()).expect("format");
-    let mut store = open(dev, Options::default()).expect("open");
+    format(std::slice::from_mut(&mut dev), &Options::default()).expect("format");
+    let mut store = open(vec![dev], Options::default()).expect("open");
     store.build_index().expect("build_index");
 
     store.put(b"key1", b"value1").expect("put key1");
@@ -139,8 +139,8 @@ fn round_trip_update() {
     use embedkv::format;
 
     let mut dev = MemDevice::new(256, 64);
-    format(&mut dev, &Options::default()).expect("format");
-    let mut store = open(dev, Options::default()).expect("open");
+    format(std::slice::from_mut(&mut dev), &Options::default()).expect("format");
+    let mut store = open(vec![dev], Options::default()).expect("open");
     store.build_index().expect("build_index");
 
     store.put(b"k", b"v1").expect("put v1");
@@ -153,11 +153,41 @@ fn round_trip_delete() {
     use embedkv::format;
 
     let mut dev = MemDevice::new(256, 64);
-    format(&mut dev, &Options::default()).expect("format");
-    let mut store = open(dev, Options::default()).expect("open");
+    format(std::slice::from_mut(&mut dev), &Options::default()).expect("format");
+    let mut store = open(vec![dev], Options::default()).expect("open");
     store.build_index().expect("build_index");
 
     store.put(b"k", b"v").expect("put");
     store.delete(b"k").expect("delete");
     assert!(store.get(b"k").is_err());
+}
+
+// ── multi-replica fan-out + fault tolerance (§20) ──────────────────────────
+
+#[test]
+fn multi_replica_write_and_fault_tolerance() {
+    use embedkv::{format, BlockDevice};
+
+    let mut devs = vec![MemDevice::new(256, 16), MemDevice::new(256, 16)];
+    format(&mut devs, &Options::default()).expect("format");
+    // replica_id is stamped per device (base + index).
+    assert_eq!(devs[1].bytes()[16], 1); // replica_id low byte of replica 1
+
+    let mut store = open(devs, Options::default()).expect("open");
+    store.build_index().expect("build_index");
+    assert_eq!(store.replica_count(), 2);
+    store.put(b"k", b"v").expect("put");
+
+    // Reclaim the devices and wreck replica 0's data block; the record must
+    // still be readable from replica 1.
+    let mut devs = store.into_devices();
+    let garbage = vec![0x5Au8; 256];
+    devs[0].write_block(1, &garbage).expect("corrupt replica 0");
+
+    let mut store2 = open(devs, Options::default()).expect("open2");
+    store2.build_index().expect("build_index2");
+    assert_eq!(
+        store2.get(b"k").expect("get survives replica-0 corruption"),
+        b"v"
+    );
 }

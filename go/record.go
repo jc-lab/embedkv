@@ -2,8 +2,8 @@ package embedkv
 
 // neededBlocks returns the number of blocks required to store key+value.
 func neededBlocks(key, value []byte, blockSize uint32) uint32 {
-	firstCap := blockSize - RecordDescriptorHeaderSize - uint32(len(key))
-	chunkCap := blockSize - ValueChunkHeaderSize
+	firstCap := firstPayloadCapacity(blockSize, uint32(len(key)))
+	chunkCap := chunkPayloadCapacity(blockSize)
 	vlen := uint32(len(value))
 	if vlen <= firstCap {
 		return 1
@@ -43,10 +43,10 @@ func verifyAndReadRecord(dev BlockDevice, descriptorBlock uint32) (*completeReco
 	if uint32(hdr.HeaderSize) != RecordDescriptorHeaderSize {
 		return nil, nil
 	}
-	if uint32(hdr.KeySize) >= blockSize-RecordDescriptorHeaderSize {
+	if uint32(hdr.KeySize) > blockSize-RecordDescriptorHeaderSize-BlockCRCSize {
 		return nil, nil
 	}
-	firstPayloadCap := blockSize - RecordDescriptorHeaderSize - uint32(hdr.KeySize)
+	firstPayloadCap := firstPayloadCapacity(blockSize, uint32(hdr.KeySize))
 	if hdr.FirstPayloadSize > firstPayloadCap {
 		return nil, nil
 	}
@@ -132,7 +132,7 @@ func verifyAndReadRecord(dev BlockDevice, descriptorBlock uint32) (*completeReco
 		if ch.ChunkIndex != expectedIdx {
 			return nil, nil
 		}
-		if ch.PayloadSize > blockSize-ValueChunkHeaderSize {
+		if ch.PayloadSize > chunkPayloadCapacity(blockSize) {
 			return nil, nil
 		}
 

@@ -4,7 +4,8 @@ import "encoding/binary"
 
 var le = binary.LittleEndian
 
-// StorageHeader is the 32-byte header stored in block 0.
+// StorageHeader is the 28-byte header stored at the start of block 0.
+// The block's CRC32 is stored separately in the last 4 bytes of the block.
 type StorageHeader struct {
 	BlockType    uint8
 	Magic        [3]byte
@@ -15,7 +16,6 @@ type StorageHeader struct {
 	ReplicaID    uint32
 	FormatSeq    uint32
 	Flags        uint32
-	BlockCRC32   uint32
 }
 
 func marshalStorageHeader(h *StorageHeader, buf []byte) {
@@ -30,11 +30,10 @@ func marshalStorageHeader(h *StorageHeader, buf []byte) {
 	le.PutUint32(buf[16:], h.ReplicaID)
 	le.PutUint32(buf[20:], h.FormatSeq)
 	le.PutUint32(buf[24:], h.Flags)
-	le.PutUint32(buf[28:], h.BlockCRC32)
 }
 
-// unmarshalStorageHeader deserializes the header and verifies its CRC32.
-// Returns true only when the CRC is valid.
+// unmarshalStorageHeader deserializes the header and verifies the block's
+// trailing CRC32. Returns true only when the CRC is valid.
 func unmarshalStorageHeader(buf []byte, h *StorageHeader) bool {
 	h.BlockType = buf[0]
 	h.Magic[0] = buf[1]
@@ -47,12 +46,12 @@ func unmarshalStorageHeader(buf []byte, h *StorageHeader) bool {
 	h.ReplicaID = le.Uint32(buf[16:])
 	h.FormatSeq = le.Uint32(buf[20:])
 	h.Flags = le.Uint32(buf[24:])
-	h.BlockCRC32 = le.Uint32(buf[28:])
-	return computeBlockCRC32(buf, 28) == h.BlockCRC32
+	return verifyBlockCRC(buf)
 }
 
 // RecordDescriptorHeader is the fixed 32-byte header of a record descriptor block.
 // Key bytes follow immediately at offset 32; value payload starts at offset 32+KeySize.
+// The block's CRC32 is stored separately in the last 4 bytes of the block.
 type RecordDescriptorHeader struct {
 	BlockType        uint8
 	HeaderSize       uint8
@@ -62,8 +61,8 @@ type RecordDescriptorHeader struct {
 	FirstPayloadSize uint32
 	ChunkCount       uint32
 	NextChunk        uint32
-	Flags            uint32
-	BlockCRC32       uint32 // offset 28
+	Flags            uint32 // internal flags, reserved — always 0
+	UserFlags        uint32 // user-defined flags; preserved verbatim
 }
 
 func marshalDescriptorHeader(h *RecordDescriptorHeader, buf []byte) {
@@ -76,11 +75,11 @@ func marshalDescriptorHeader(h *RecordDescriptorHeader, buf []byte) {
 	le.PutUint32(buf[16:], h.ChunkCount)
 	le.PutUint32(buf[20:], h.NextChunk)
 	le.PutUint32(buf[24:], h.Flags)
-	le.PutUint32(buf[28:], h.BlockCRC32)
+	le.PutUint32(buf[28:], h.UserFlags)
 }
 
-// unmarshalDescriptorHeader deserializes the header and verifies its CRC32.
-// Returns true only when the CRC is valid.
+// unmarshalDescriptorHeader deserializes the header and verifies the block's
+// trailing CRC32. Returns true only when the CRC is valid.
 func unmarshalDescriptorHeader(buf []byte, h *RecordDescriptorHeader) bool {
 	h.BlockType = buf[0]
 	h.HeaderSize = buf[1]
@@ -91,11 +90,12 @@ func unmarshalDescriptorHeader(buf []byte, h *RecordDescriptorHeader) bool {
 	h.ChunkCount = le.Uint32(buf[16:])
 	h.NextChunk = le.Uint32(buf[20:])
 	h.Flags = le.Uint32(buf[24:])
-	h.BlockCRC32 = le.Uint32(buf[28:])
-	return computeBlockCRC32(buf, 28) == h.BlockCRC32
+	h.UserFlags = le.Uint32(buf[28:])
+	return verifyBlockCRC(buf)
 }
 
-// ValueChunkHeader is the fixed 24-byte header of a value chunk block.
+// ValueChunkHeader is the fixed 20-byte header of a value chunk block.
+// The block's CRC32 is stored separately in the last 4 bytes of the block.
 type ValueChunkHeader struct {
 	BlockType       uint8
 	HeaderSize      uint8
@@ -104,7 +104,6 @@ type ValueChunkHeader struct {
 	ChunkIndex      uint32
 	PayloadSize     uint32
 	NextChunk       uint32
-	BlockCRC32      uint32
 }
 
 func marshalChunkHeader(h *ValueChunkHeader, buf []byte) {
@@ -115,11 +114,10 @@ func marshalChunkHeader(h *ValueChunkHeader, buf []byte) {
 	le.PutUint32(buf[8:], h.ChunkIndex)
 	le.PutUint32(buf[12:], h.PayloadSize)
 	le.PutUint32(buf[16:], h.NextChunk)
-	le.PutUint32(buf[20:], h.BlockCRC32)
 }
 
-// unmarshalChunkHeader deserializes the header and verifies its CRC32.
-// Returns true only when the CRC is valid.
+// unmarshalChunkHeader deserializes the header and verifies the block's
+// trailing CRC32. Returns true only when the CRC is valid.
 func unmarshalChunkHeader(buf []byte, h *ValueChunkHeader) bool {
 	h.BlockType = buf[0]
 	h.HeaderSize = buf[1]
@@ -128,8 +126,7 @@ func unmarshalChunkHeader(buf []byte, h *ValueChunkHeader) bool {
 	h.ChunkIndex = le.Uint32(buf[8:])
 	h.PayloadSize = le.Uint32(buf[12:])
 	h.NextChunk = le.Uint32(buf[16:])
-	h.BlockCRC32 = le.Uint32(buf[20:])
-	return computeBlockCRC32(buf, 20) == h.BlockCRC32
+	return verifyBlockCRC(buf)
 }
 
 // classifyBlock returns whether buf is a free, non-free valid, or garbage block.
@@ -156,7 +153,7 @@ func classifyBlock(buf []byte) blockClass {
 		}
 	case BlockTypeRecordDescriptor:
 		var h RecordDescriptorHeader
-		if unmarshalDescriptorHeader(buf, &h) {
+		if uint32(len(buf)) >= RecordDescriptorHeaderSize+BlockCRCSize && unmarshalDescriptorHeader(buf, &h) {
 			return blockClassValid
 		}
 	case BlockTypeValueChunk:
@@ -174,6 +171,18 @@ func classifyBlock(buf []byte) blockClass {
 // isFreeCandidate returns true if the block can be allocated as free space.
 func isFreeCandidate(buf []byte) bool {
 	return classifyBlock(buf) == blockClassFree
+}
+
+// firstPayloadCapacity returns how many value bytes fit in a descriptor block
+// after the header, the key, and the trailing block CRC.
+func firstPayloadCapacity(blockSize, keySize uint32) uint32 {
+	return blockSize - RecordDescriptorHeaderSize - keySize - BlockCRCSize
+}
+
+// chunkPayloadCapacity returns how many value bytes fit in a value chunk block
+// after the header and the trailing block CRC.
+func chunkPayloadCapacity(blockSize uint32) uint32 {
+	return blockSize - ValueChunkHeaderSize - BlockCRCSize
 }
 
 // makeFreeBuf returns a block-sized buffer filled with the given free pattern (0x00 or 0xFF).

@@ -39,3 +39,24 @@ pub fn compute_block_crc32(buf: &[u8], crc_offset: usize) -> u32 {
     crc = crc32_update(crc, &buf[crc_offset + 4..]);
     crc ^ 0xFFFF_FFFF
 }
+
+/// Offset of the block_crc32 field: always the last 4 bytes of the block,
+/// regardless of block type.
+pub fn block_crc_offset(buf: &[u8]) -> usize {
+    buf.len() - 4
+}
+
+/// Compute the block CRC (treating the trailing CRC field as zero) and store it
+/// in the last 4 bytes of the block.
+pub fn write_block_crc(buf: &mut [u8]) {
+    let off = block_crc_offset(buf);
+    let crc = compute_block_crc32(buf, off);
+    buf[off..off + 4].copy_from_slice(&crc.to_le_bytes());
+}
+
+/// Return true when the stored trailing CRC matches the block contents.
+pub fn verify_block_crc(buf: &[u8]) -> bool {
+    let off = block_crc_offset(buf);
+    let stored = u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]);
+    compute_block_crc32(buf, off) == stored
+}

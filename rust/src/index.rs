@@ -38,4 +38,13 @@ impl MemIndex {
     pub fn delete(&mut self, key: &str) {
         self.entries.remove(key);
     }
+
+    /// Iterate over all index entries.
+    pub fn all_entries(&self) -> impl Iterator<Item = &IndexEntry> {
+        self.entries.values()
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
 }

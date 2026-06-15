@@ -1,33 +1,24 @@
 package embedkv
 
-// Recover performs a full storage scan, removes all garbage blocks (incomplete
-// records, orphan chunks, stale generations), and flushes if any block was erased.
-//
-// Recover does NOT build the in-memory index; call BuildIndex() afterwards.
-// Per ARCH §17.
-func (s *Store) Recover() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	blockSize := s.dev.BlockSize()
-	blockCount := s.dev.BlockCount()
+// recover performs a full storage scan of a single replica, removing all garbage
+// blocks (incomplete records, orphan chunks, stale generations) and flushing if
+// any block was erased. Per ARCH §17.
+func (r *replica) recover(freePattern byte) error {
+	blockSize := r.dev.BlockSize()
+	blockCount := r.dev.BlockCount()
 	buf := make([]byte, blockSize)
 
-	// Collect best complete record per key (actual key bytes, not hash)
-	type keyGen struct {
-		key        string
-		generation uint32
-	}
-	best := make(map[string]*completeRecord) // key string → best record
+	// Collect best complete record per key (actual key bytes, not hash).
+	best := make(map[string]*completeRecord)
 
 	for i := uint32(1); i < blockCount; i++ {
-		if err := s.dev.ReadBlock(i, buf); err != nil {
+		if err := r.dev.ReadBlock(i, buf); err != nil {
 			return err
 		}
 		if buf[0] != BlockTypeRecordDescriptor {
 			continue
 		}
-		rec, err := verifyAndReadRecord(s.dev, i)
+		rec, err := verifyAndReadRecord(r.dev, i)
 		if err != nil {
 			return err
 		}
@@ -40,7 +31,7 @@ func (s *Store) Recover() error {
 		}
 	}
 
-	// Mark all blocks belonging to valid records
+	// Mark all blocks belonging to valid records.
 	valid := make(map[uint32]bool)
 	valid[0] = true
 	for _, rec := range best {
@@ -50,26 +41,26 @@ func (s *Store) Recover() error {
 		}
 	}
 
-	// Erase garbage blocks
-	free := makeFreeBuf(blockSize, s.opts.FreePattern)
+	// Erase garbage blocks.
+	free := makeFreeBuf(blockSize, freePattern)
 	garbageFound := false
 	for i := uint32(1); i < blockCount; i++ {
 		if valid[i] {
 			continue
 		}
-		if err := s.dev.ReadBlock(i, buf); err != nil {
+		if err := r.dev.ReadBlock(i, buf); err != nil {
 			return err
 		}
 		if buf[0] == 0x00 || buf[0] == 0xFF {
 			continue // already free
 		}
-		if err := s.dev.WriteBlock(i, free); err != nil {
+		if err := r.dev.WriteBlock(i, free); err != nil {
 			return err
 		}
 		garbageFound = true
 	}
 	if garbageFound {
-		if err := s.dev.Flush(); err != nil {
+		if err := r.dev.Flush(); err != nil {
 			return err
 		}
 	}

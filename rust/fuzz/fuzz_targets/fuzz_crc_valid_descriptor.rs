@@ -8,7 +8,7 @@
 
 use arbitrary::Arbitrary;
 use embedkv::{
-    crc::compute_block_crc32,
+    crc::write_block_crc,
     format::{BLOCK_TYPE_RECORD_DESCRIPTOR, RECORD_DESCRIPTOR_HEADER_SIZE},
     open, BlockDevice, MemDevice, Options,
 };
@@ -26,10 +26,12 @@ struct DescriptorFields {
     chunk_count: u32,
     next_chunk: u32,
     flags: u32,
+    user_flags: u32,
 }
 
-/// Construct a block with the given descriptor fields and a valid CRC at offset 28.
-/// header_size is always set to the correct value (32) so validation passes that gate.
+/// Construct a block with the given descriptor fields and a valid block CRC in
+/// the last 4 bytes. header_size is always set to the correct value (32) so
+/// validation passes that gate.
 fn build_crc_valid_descriptor(fields: &DescriptorFields) -> Vec<u8> {
     let mut buf = vec![0u8; BLOCK_SIZE as usize];
     buf[0] = BLOCK_TYPE_RECORD_DESCRIPTOR;
@@ -41,9 +43,9 @@ fn build_crc_valid_descriptor(fields: &DescriptorFields) -> Vec<u8> {
     buf[16..20].copy_from_slice(&fields.chunk_count.to_le_bytes());
     buf[20..24].copy_from_slice(&fields.next_chunk.to_le_bytes());
     buf[24..28].copy_from_slice(&fields.flags.to_le_bytes());
-    // Patch CRC (field at offset 28, length 4)
-    let crc = compute_block_crc32(&buf, 28);
-    buf[28..32].copy_from_slice(&crc.to_le_bytes());
+    buf[28..32].copy_from_slice(&fields.user_flags.to_le_bytes());
+    // Block CRC lives in the last 4 bytes.
+    write_block_crc(&mut buf);
     buf
 }
 
@@ -51,7 +53,7 @@ fuzz_target!(|fields: DescriptorFields| {
     let desc_buf = build_crc_valid_descriptor(&fields);
 
     let mut dev = MemDevice::new(BLOCK_SIZE, BLOCK_COUNT);
-    if embedkv::format(&mut dev, &Options::default()).is_err() {
+    if embedkv::format(std::slice::from_mut(&mut dev), &Options::default()).is_err() {
         return;
     }
     // Fill every data block with the same fuzzed descriptor so that any
@@ -64,7 +66,7 @@ fuzz_target!(|fields: DescriptorFields| {
     let _ = embedkv::record::verify_and_read_record(&mut dev, 1);
 
     // High-level pipeline.
-    if let Ok(mut s) = open(dev, Options::default()) {
+    if let Ok(mut s) = open(vec![dev], Options::default()) {
         let _ = s.build_index();
         let _ = s.get(b"key");
     }

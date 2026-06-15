@@ -24,7 +24,7 @@ fuzz_target!(|data: &[u8]| {
     // ── Path 1: raw block in a properly formatted storage ──────────────────
     {
         let mut dev = MemDevice::new(BLOCK_SIZE, BLOCK_COUNT);
-        if embedkv::format(&mut dev, &Options::default()).is_err() {
+        if embedkv::format(std::slice::from_mut(&mut dev), &Options::default()).is_err() {
             return;
         }
         // Descriptor block
@@ -39,7 +39,7 @@ fuzz_target!(|data: &[u8]| {
         let _ = embedkv::record::verify_and_read_record(&mut dev, 1);
 
         // High-level pipeline (no recover)
-        if let Ok(mut s) = open(dev, Options::default()) {
+        if let Ok(mut s) = open(vec![dev], Options::default()) {
             let _ = s.build_index();
             let _ = s.get(b"any-key");
         }
@@ -48,7 +48,7 @@ fuzz_target!(|data: &[u8]| {
     // ── Path 2: same bytes but with Recover ────────────────────────────────
     {
         let mut dev = MemDevice::new(BLOCK_SIZE, BLOCK_COUNT);
-        if embedkv::format(&mut dev, &Options::default()).is_err() {
+        if embedkv::format(std::slice::from_mut(&mut dev), &Options::default()).is_err() {
             return;
         }
         let _ = dev.write_block(1, &block);
@@ -56,7 +56,7 @@ fuzz_target!(|data: &[u8]| {
             let _ = dev.write_block(i, &block);
         }
 
-        if let Ok(mut s) = open(dev, Options::default()) {
+        if let Ok(mut s) = open(vec![dev], Options::default()) {
             let _ = s.recover();
             let _ = s.build_index();
             let _ = s.get(b"any-key");
@@ -77,7 +77,7 @@ fuzz_target!(|data: &[u8]| {
         }
 
         let mut dev = MemDevice::new(BLOCK_SIZE, BLOCK_COUNT);
-        if embedkv::format(&mut dev, &Options::default()).is_err() {
+        if embedkv::format(std::slice::from_mut(&mut dev), &Options::default()).is_err() {
             return;
         }
         let _ = dev.write_block(1, &desc_block);

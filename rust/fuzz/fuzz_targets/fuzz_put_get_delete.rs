@@ -24,10 +24,10 @@ struct PutGetInput {
 
 fuzz_target!(|input: PutGetInput| {
     let mut dev = MemDevice::new(BLOCK_SIZE, BLOCK_COUNT);
-    if format(&mut dev, &Options::default()).is_err() {
+    if format(std::slice::from_mut(&mut dev), &Options::default()).is_err() {
         return;
     }
-    let Ok(mut s) = open(dev, Options::default()) else { return };
+    let Ok(mut s) = open(vec![dev], Options::default()) else { return };
     if s.build_index().is_err() {
         return;
     }
